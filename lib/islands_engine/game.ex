@@ -1,9 +1,10 @@
 defmodule IslandsEngine.Game do
   alias IslandsEngine.{Board, Coordinate, Guesses, Island, Rules}
 
-  use GenServer
+  use GenServer, start: {__MODULE__, :start_link, []}, restart: :transient
 
   @players [:player1, :player2]
+  @timeout 60 * 60 * 24 * 1000
 
   ##
   # Public API
@@ -27,9 +28,8 @@ defmodule IslandsEngine.Game do
   ##
 
   def init(name) do
-    player1 = %{name: name, board: Board.new(), guesses: Guesses.new()}
-    player2 = %{name: nil, board: Board.new(), guesses: Guesses.new()}
-    {:ok, %{player1: player1, player2: player2, rules: %Rules{}}}
+    send(self(), {:set_state, name})
+    {:ok, fresh_state(name)}
   end
 
   def start_link(name) when is_binary(name),
@@ -43,7 +43,7 @@ defmodule IslandsEngine.Game do
       |> update_rules(rules)
       |> reply_success(:ok)
     else
-      :error -> {:reply, :error, state_data}
+      :error -> reply_error(state_data)
     end
   end
 
@@ -60,14 +60,13 @@ defmodule IslandsEngine.Game do
       |> update_rules(rules)
       |> reply_success(:ok)
     else
-      :error ->
-        {:reply, :error, state_data}
+      :error -> reply_error(state_data)
 
       {:error, :invalid_coordinate} ->
-        {:reply, {:error, :invalid_coordinate}, state_data}
-
-      {:error, :invalid_island_type} ->
-        {:reply, {:error, :invalid_island_type}, state_data}
+        reply_error(state_data, {:error, :invalid_coordinate})
+ 
+      {:error, :invalid_island_type} -> 
+        reply_error(state_data, {:error, :invalid_island_type})
     end
   end
 
@@ -81,8 +80,8 @@ defmodule IslandsEngine.Game do
       |> update_rules(rules)
       |> reply_success({:ok, board})
     else
-      :error -> {:reply, :error, state_data}
-      false -> {:reply, {:error, :not_all_islands_positioned}, state_data}
+      :error -> reply_error(state_data)
+      false -> reply_error(state_data, {:error, :not_all_islands_positioned})
     end
   end
 
@@ -103,10 +102,10 @@ defmodule IslandsEngine.Game do
       |> reply_success({hit_or_miss, forested_island, win_status})
     else
       :error ->
-        {:reply, :error, state_data}
+        reply_error(state_data)
 
-      {:error, :invalid_coordinate} ->
-        {:reply, {:error, :invalid_coordinate}, state_data}
+      {:error, :invalid_coordinate} -> 
+        reply_error(state_data, {:error, :invalid_coordinate})
     end
   end
 
@@ -114,10 +113,27 @@ defmodule IslandsEngine.Game do
     {:noreply, Map.put(state, :test, new_value)}
   end
 
-  def handle_info(:first, state) do
-    IO.puts("This message has been handled by handle_info/2, matching on :first.")
-    {:noreply, state}
+  def handle_info(:timeout, state_data) do
+    {:stop, {:shutdown, :timeout}, state_data}
   end
+
+  def handle_info({:set_state, name}, _state_data) do
+    state_data = 
+      case :ets.lookup(:game_state, name) do
+        [] -> fresh_state(name)
+        [{_key, state}] -> state
+      end
+
+    :ets.insert(:game_state, {name, state_data})
+    {:noreply, state_data, @timeout}
+  end
+
+  def terminate({:shutdown, :timeout}, state_data) do
+    :ets.delete(:game_state, state_data.player1.name)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   ##
   # Business logic
@@ -127,7 +143,13 @@ defmodule IslandsEngine.Game do
 
   defp update_rules(state_data, rules), do: %{state_data | rules: rules}
 
-  defp reply_success(state_data, reply), do: {:reply, reply, state_data}
+  defp reply_success(state_data, reply) do
+    :ets.insert(:game_state, {state_data.player1.name, state_data})
+    {:reply, reply, state_data, @timeout}
+  end
+
+  defp reply_error(state_data, error), do: {:reply, error, state_data, @timeout}
+  defp reply_error(state_data), do: {:reply, :error, state_data, @timeout}
 
   defp player_board(state_data, player), do: Map.get(state_data, player).board
 
@@ -138,6 +160,12 @@ defmodule IslandsEngine.Game do
     update_in(state_data[player_key].guesses, fn guesses ->
       Guesses.add(guesses, hit_or_miss, coordinate)
     end)
+  end
+
+  defp fresh_state(name) do
+    player1 = %{name: name, board: Board.new(), guesses: Guesses.new()}
+    player2 = %{name: nil, board: Board.new(), guesses: Guesses.new()}
+    %{player1: player1, player2: player2, rules: %Rules{}}
   end
 
   defp opponent(:player1), do: :player2
