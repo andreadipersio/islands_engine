@@ -1,6 +1,7 @@
 # IslandsEngine
 
-**TODO: Add description**
+## Why?
+This is an exercise in the book [Functional Web Development with Elixir, OTP, and Phoenix](https://www.oreilly.com/library/view/functional-web-development/9781680505436/)
 
 ## Installation
 
